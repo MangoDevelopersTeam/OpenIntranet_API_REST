@@ -1,13 +1,23 @@
-// Importación del metodo Decrypt y el admin sdk
-const { Decrypt, Encrypt } = require("./../helpers/cipher");
+// Importaciones
 const admin = require("firebase-admin");
 
-// Inicialización del admin sdk para usarlo
-admin.initializeApp();
-
-// Declaración de constantes DB y AUTH
-const DB = admin.firestore();
-const AUTH = admin.auth();
+// Declaraciones
+const auth = admin.auth();
 
 // Objeto controllers que contendra los metodos
 const controllers = {};
+
+/**
+ * Función que obtendra el nivel del usuario
+ * @param {import("express").Request} req objeto request
+ * @param {import("express").Response} res objeto response
+ * @returns Retorna el nivel del usuario
+ */
+controllers.getAccess = async (req, res) => {
+    const { uid } = res.locals;
+    
+    let user = await auth.getUser(uid);
+    return res.send({ code: "PROCESS_OK", level: user.customClaims?.level });
+};
+
+module.exports = controllers;

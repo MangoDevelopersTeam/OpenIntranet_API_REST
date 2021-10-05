@@ -29,5 +29,4 @@ controllers.verifyToken = async (req, res) => {
     };
 };
 
-
 module.exports = controllers;

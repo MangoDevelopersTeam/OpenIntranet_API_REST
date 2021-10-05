@@ -2,13 +2,9 @@
 const { Decrypt, Encrypt } = require("./../helpers/cipher");
 const admin = require("firebase-admin");
 
-// Inicialización del admin sdk para usarlo
-admin.initializeApp();
-
 // Declaración de constantes DB y AUTH
 const DB = admin.firestore();
 const AUTH = admin.auth();
-const BATCH = admin.firestore().batch();
 
 // Objeto controllers que contendra los metodos
 const controllers = {};
@@ -108,17 +104,25 @@ controllers.whoami = async (req, res) => {
     try 
     {
         // Se realiza la peticion para verificar el token y se obtiene el usuario
-        const payloadVerifyToken = await AUTH.verifyIdToken(idToken, true);
-        const resultGetUser = await AUTH.getUser(payloadVerifyToken.uid);
+        await admin.auth().verifyIdToken(idToken, true)
+        .then(async (decodedToken) => {
 
-        // Se hace un objeto de usuario
-        let dataObject = {
-            email: Encrypt(resultGetUser.email),
-            displayName: Encrypt(resultGetUser.displayName)
-        };
+            await admin.auth().getUser(decodedToken.uid)
+            .then((userRecord) => {
+                const dataObject = {
+                    email: Encrypt(userRecord.email),
+                    displayName: Encrypt(userRecord.displayName)
+                };
 
-        // Se retorna el objeto de usuario
-        return res.send(dataObject);
+                return res.send(dataObject);
+            })
+            .catch((error) => {
+                return res.send({ code: "FIREBASE_GET_USER_ERROR", message: error.message, type: "error" }); 
+            })
+        })
+        .catch((error) => {
+            return res.send({ code: "FIREBASE_VERIFY_TOKEN_ERROR", message: error.message, type: "error" });     
+        });
     } 
     catch (error) 
     {
@@ -161,18 +165,28 @@ controllers.verifyAccess = async (req, res) => {
         const { type } = req.query;
 
         // Se realiza la peticion para verificar el token y se obtiene el usuario
-        const payloadVerifyToken = await AUTH.verifyIdToken(idToken, true);
-        const resultGetUser = await AUTH.getUser(payloadVerifyToken.uid);
+        await admin.auth().verifyIdToken(idToken, true)
+        .then(async (decodedToken) => {
 
-        // se realiza la comparación del nivel de usuaio
-        if (Decrypt(type) === Decrypt(resultGetUser.customClaims.level))
-        {
-            return res.send({ access: true });
-        }
-        else
-        {
-            return res.send({ access: false });
-        }
+            await admin.auth().getUser(decodedToken.uid)
+            .then((userRecord) => {
+                const getUserLevel = Decrypt(userRecord.customClaims.level);
+                const receivedLevel = Decrypt(type);
+
+                if (getUserLevel === receivedLevel)
+                {
+                    return res.send({ access: true });
+                }
+
+                return res.send({ access: false });
+            })
+            .catch((error) => {
+                return res.send({ code: "FIREBASE_GET_USER_ERROR", message: error.message, type: "error" }); 
+            })
+        })
+        .catch((error) => {
+            return res.send({ code: "FIREBASE_VERIFY_TOKEN_ERROR", message: error.message, type: "error" });     
+        });
     } 
     catch (error) 
     {

@@ -6,30 +6,6 @@ const auth = admin.auth();
 
 const controllers = {};
 
-const getCoursesNoPage = async (page) => {
-    let array = [];
-
-    await db.collection("courses").orderBy("created_at").startAt(0).limit(5).get()
-    .then((coursesRecord) => {
-        if (coursesRecord?.docs?.length > 0)
-        {
-            coursesRecord?.docs?.forEach(course => {
-                array.push({
-                    id: course?.id,
-                    data: course?.data(),
-                });
-            });
-
-            return res.send({ code: "PROCESS_OK", data: array, page: page, type: "success" });
-        }
-
-        return res.send({ code: "NO_REGIONS", message: "No existen regiones aún", type: "error" });
-    })
-    .catch((error) => {
-        return res.send({ code: "FIREBASE_GET_ERROR", message: error.message, type: "error" });
-    });
-}
-
 /**
  * Función para obtener los cursos
  * @param {Request} req objeto request
@@ -119,11 +95,11 @@ controllers.getCourses = async (req, res) => {
                             coursesRecord?.docs?.forEach(course => {
                                 array.push({
                                     id: course?.id,
-                                    data: course?.data(),
+                                    data: Encrypt(course?.data()),
                                 });
                             });
 
-                            return res.send({ code: "PROCESS_OK", data: array, paginas: size, type: "success" });
+                            return res.send({ code: "PROCESS_OK", data: Encrypt(array), paginas: size, type: "success" });
                         }
 
                         return res.send({ code: "NO_REGIONS", message: "No existen regiones aún", type: "error" });
@@ -208,23 +184,50 @@ controllers.getCourses = async (req, res) => {
  * @returns Objeto con la información de la asignatura
  */
 controllers.getCourseById = async (req, res)=>{
-    const { id } = req.query;
+    let { id } = req.query;
+
+    let db = admin.firestore();
+
+    let code = "";
+    let data = null;
+    let message = "";
+    let type = "";
 
     await db.collection('courses').doc(id).get()
-    .then(async (course) => {
-        let exist = course?.exists;
-
-        if (exist === true)
+    .then((result) => {
+        if (result.exists === true)
         {
-            return await res.send({ code: "PROCESS_OK", finded: true, data: Encrypt(course?.data()), type: "success" });
+            code = "PROCESS_OK";
+            data = Encrypt(result.data());
+            type = "success";
         }
-
-        return await res.send({ code: "COURSE_NOT_FOUND", finded: false, data: undefined, message: "No se encontro el curso con el id enviado", type: "error" });
+        else
+        {
+            code = "COURSE_NOT_FOUND";
+            data = undefined;
+            message = "No se encontro el curso con el id escrito";
+            type = "error";
+        }
     })
-    .catch(async (error) => {
-        return await res.send({ code: "FIREBASE_GET_ERROR", message: error?.message, type: "error" });
+    .catch((error) => {
+        code = "FIREBASE_GET_ERROR";
+        message = error?.message;
+        type = "error";
+    })
+    .finally(() => {
+        res.send({ code: code, message: message, data: data, type: type });
+        
+        message = null;
+        code = null;  
+        data = null;
+        type = null;
+        db = null;
+        id = null;
+
+        return;
     });
 };
+
 
 /**
  * Función para obtener los profesores que esten ligados a los cursos de la asignatura
@@ -233,30 +236,128 @@ controllers.getCourseById = async (req, res)=>{
  * @returns arreglo de usuarios de profesores ligados a la asignatura
  */
 controllers.getTeachers = async (req, res) => {
-    const { course } = req.query;
+    let { course } = req.query;
+
+    let db = admin.firestore();
+
+    let code = "";
+    let data = null;
+    let message = "";
+    let type = "";
 
     await db.collection("users").where("level", "==", "teacher").where("courses", "array-contains", course).get()
-    .then((teachersRecord)=>{
-        if (teachersRecord?.docs?.length > 0)
+    .then((result)=>{
+        if (result.docs.length > 0)
         {
             let array = [];
 
-            teachersRecord?.docs?.forEach(teacherRecord => {
+            result.forEach(doc => {
                 array.push({
-                    id: teacherRecord.id,
-                    data: teacherRecord.data()
+                    id: doc.id,
+                    data: Encrypt(doc.data())
                 });
             });
 
-            return res.send({ code: "PROCESS_OK", data: Encrypt(array), type: "success" });
+            code = "PROCESS_OK";
+            data = Encrypt(array);
+            type = "success";
         }
-
-        return res.send({ code: "NO_TEACHERS", message: "No existen profesores ligadas a esta asignatura", type: "error" });
+        else
+        {
+            code = "NO_TEACHERS";
+            message = "No existen profesores ligados a esta asignatura";
+            type = "warning";
+        }
     })
-    .catch((error)=>{
-        return res.send({ code: "FIREBASE_GET_ERROR", message: error.message, type: "error" });
+    .catch(error => {
+        code = "FIREBASE_GET_ERROR";
+        message = error.message;
+        type = "error";
+    })
+    .finally(() => {
+        res.send({ code: code, message: message, data: data, type: type });
+        
+        message = null;
+        code = null;  
+        data = null;
+        type = null;
+        db = null;
+        course = null;
+
+        return;
     });
 };
+
+
+/**
+ * Función para obtener los alumnos que esten ligados al curso de la asignatura
+ * @param {Request} req objeto request
+ * @param {Response} res objeto response
+ * @returns arreglo de usuarios de alumnos ligados a la asignatura
+ */
+controllers.getStudents = async (req, res) => {
+    let { number, letter, grade } = req.query;
+
+    let db = admin.firestore();
+
+    let code = "";
+    let data = null;
+    let message = "";
+    let type = "";
+
+    await db.collection("users").where("level", "==", "student").get()
+    .then(result => {
+        if (result.docs.length > 0)
+        {
+            let students = result.docs.filter(x => x.data().number == number && x.data().letter == letter && x.data().grade == grade);
+            if (students.length > 0)
+            {
+                let array = [];
+
+                students.forEach(doc => {
+                    array.push({
+                        id: doc.id,
+                        data: Encrypt(doc.data())
+                    });
+                });
+
+                code = "PROCESS_OK";
+                data = Encrypt(array);
+                type = "success";
+            }
+            else
+            {
+                code = "NO_STUDENTS";
+                message = "No existen alumnos ligados a esta asignatura";
+                type = "warning";
+            }
+        }
+        else
+        {
+            code = "NO_STUDENTS";
+            message = "No existen alumnos ligados a esta asignatura";
+            type = "warning";
+        }
+    })
+    .catch((error)=>{
+        code = "FIREBASE_GET_ERROR";
+        message = error.message;
+        type = "error";
+    })
+    .finally(() => {
+        res.send({ code: code, message: message, data: data, type: type });
+        
+        message = null;
+        code = null;  
+        data = null;
+        type = null;
+        db = null;
+        course = null;
+
+        return;
+    });
+};
+
 
 /**
  * Función para obtener el arreglo de usuarios profesores dentro de la asignatura
@@ -265,84 +366,174 @@ controllers.getTeachers = async (req, res) => {
  * @returns arreglo de usuarios de profesores ligados a la asignatura
  */
 controllers.getTeachersCourse = async (req, res) => {
-    const { id } = req.query;
+    let { id } = req.query;
+
+    let db = admin.firestore();
+
+    let code = "";
+    let data = null;
+    let message = "";
+    let type = "";
 
     await db.collection("courses").doc(id).collection("teachers").get()
-    .then((courses) => {
-        if (courses.docs.length > 0)
+    .then((result) => {
+        if (result.docs.length > 0)
         {
             let array = [];
         
-            courses?.forEach((doc)=>{
-                array.push(
-                    doc.id
-                )
+            result.forEach(doc => {
+                array.push({
+                    id: doc.id,
+                    data: Encrypt(doc.data())
+                });
             });
 
-            return res.send({ code: "PROCESS_OK", data: Encrypt(array), type: "success" });
+            code = "PROCESS_OK";
+            data = Encrypt(array);
+            type = "success";
         }
-        
-        return res.send({ code: "NO_TEACHERS_FOUNDED", message: "No hay profesores en esta asignatura aún", type: "error" });
+        else
+        {
+            code = "NO_TEACHERS_FOUNDED";
+            message = "No hay profesores en esta asignatura aún";
+            type = "warning";
+        } 
     })
     .catch((error)=>{
-        return res.send({ code: "FIREBASE_GET_ERROR", message: error.message, type: "error" });
+        code = "FIREBASE_GET_ERROR";
+        message = error.message;
+        type = "error";
+    })
+    .finally(() => {
+        res.send({ code: code, message: message, data: data, type: type });
+        
+        message = null;
+        code = null;  
+        data = null;
+        type = null;
+        db = null;
+        id = null;
+
+        return;
     });
 };
 
 
 /**
- * Función para obtener el arreglo de usuarios profesores ayudantes dentro de la asignatura
+ * Función para obtener el arreglo de usuarios alumnos dentro de la asignatura
  * @param {Request} req objeto request
  * @param {Response} res objeto response
- * @returns arreglo de usuarios de profesores ligados a la asignatura
+ * @returns arreglo de usuarios de alumnos ligados a la asignatura
  */
-controllers.getHelpersTeachersCourse = async (req, res) => {
-    const { id } = req.query;
+controllers.getStudentsCourse = async (req, res) => {
+    let { id } = req.query;
 
-    await db.collection("courses").doc(id).collection("teachers").where('helper', '==', true).get()
-    .then((helpers) => {
-        if (helpers.docs.length > 0)
+    let db = admin.firestore();
+
+    let code = "";
+    let data = null;
+    let message = "";
+    let type = "";
+
+    await db.collection("courses").doc(id).collection("students").get()
+    .then((result) => {
+        if (result.docs.length > 0)
         {
             let array = [];
         
-            helpers?.forEach((doc)=>{
-                array.push(
-                    doc.id
-                )
+            result.forEach(doc => {
+                array.push({
+                    id: doc.id,
+                    data: Encrypt(doc.data())
+                });
             });
 
-            return res.send({ code: "PROCESS_OK", data: Encrypt(array), type: "success" });
+            code = "PROCESS_OK";
+            data = Encrypt(array);
+            type = "success";
         }
-        
-        return res.send({ code: "NO_HELPERS_FOUNDED", message: "No hay profesores ayudantes en esta asignatura aún", type: "error" });
+        else
+        {
+            code = "NO_STUDENTS_FOUNDED";
+            message = "No hay estudiantes en esta asignatura aún";
+            type = "warning";
+        } 
     })
     .catch((error)=>{
-        return res.send({ code: "FIREBASE_GET_ERROR", message: error.message, type: "error" });
+        code = "FIREBASE_GET_ERROR";
+        message = error.message;
+        type = "error";
+    })
+    .finally(() => {
+        res.send({ code: code, message: message, data: data, type: type });
+        
+        message = null;
+        code = null;  
+        data = null;
+        type = null;
+        db = null;
+        id = null;
+
+        return;
     });
 };
 
 
 /**
- * Función para probar req.locals
+ * Función para obtener las unidades en un curso especifico
  * @param {import("express").Request} req objeto request
  * @param {import("express").Response} res objeto response
- * @returns mensaje
+ * @returns arreglo de unidades del curso o un mensaje informativo
  */
-controllers.testingResLocals = (req, res) => {
-    const { uid } = res.locals;
+controllers.getUnitsCourse = async (req, res) => {
+    let { id } = req.query;
 
-    let elem = "";
+    let db = admin.firestore();
 
-    if (uid !== null)
-    {
-        elem = uid
-    }
-    else
-    {
-        elem = "no hay un uid"
-    }
+    let code = "";
+    let data = null;
+    let message = "";
+    let type = "";
+    let status = 0;
 
-    return res.send({ code: "TESTING", message: elem, type: "info" });
-}
+    await db.collection("courses").doc(id).collection("units").orderBy("numberUnit", "asc").get()
+    .then((result) => {
+        let array = [];
+
+        if (result.size > 0)
+        {
+            result.forEach(doc => {
+                array.push({
+                    id: doc.id,
+                    data: Encrypt(doc.data())
+                });
+            });           
+        }
+        
+        code = "PROCESS_OK";
+        data = Encrypt(array);
+        type = "success";
+        status = 200;
+    })
+    .catch((error)=>{
+        code = "FIREBASE_GET_UNITS_ERROR";
+        message = error.message;
+        type = "error";
+        status = 400;
+    })
+    .finally(() => {
+        res.status(status).send({ code: code, message: message, data: data, type: type });
+        
+        message = null;
+        status = null;
+        code = null;  
+        data = null;
+        type = null;
+        db = null;
+        id = null;
+
+        return;
+    });
+};
 
 module.exports = controllers;

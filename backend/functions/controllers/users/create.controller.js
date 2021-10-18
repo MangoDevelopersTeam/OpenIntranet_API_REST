@@ -1,149 +1,377 @@
 // Importación del metodo Decrypt y el admin sdk
-const { Decrypt, Encrypt } = require("./../helpers/cipher");
+const { Decrypt, Encrypt } = require("./../../helpers/cipher");
 const admin = require("firebase-admin");
-
-// Inicialización del admin sdk para usarlo
-admin.initializeApp();
-
-// Declaración de constantes DB y AUTH
-const DB = admin.firestore();
-const AUTH = admin.auth();
 
 // Objeto controllers que contendra los metodos
 const controllers = {};
 
-/**
- * Metodo que recibe un objeto user y crea un usuario en la DB
- * @param {Request} req objeto request
- * @param {Response} res objeto response
- * @returns Mensaje informativo al usuario
- */
- controllers.createUser = async (req, res) => {
-    // Se verifica si hay una token de autorización
-    if (!req.headers.authorization || !req.headers.authorization.startsWith('Bearer '))
-    {
-        return res.status(401).send({ code: "TOKEN_MISSING", message: "Esta acción necesita de un token de autenticación", type: "error" });
-    }
-
-    let idToken;
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) 
-    {
-        idToken = req.headers.authorization.split('Bearer ')[1];
-    }
-
-    try 
-    {
-        // Se verifica si el idToken provisto es valido o no
-        await AUTH.verifyIdToken(idToken, true)
-        .then(async () => {
-            const { user } = req.body;
-
-            if (user !== "" && user !== null)
-            {
-                try 
-                {
-                    // Se hace el registro del usuario en la base de datos
-                    await DB.collection("users").doc(Decrypt(user.id)).set(user);
-
-                    // Se actualiza el profile del usuario, debido a que el API REST de signup provisto por firebase no crea este apartado
-                    await AUTH.updateUser(Decrypt(user.id), {
-                        displayName: `${Decrypt(user.name)} ${Decrypt(user.lastName)}`,
-                    });
-
-                    // Se establece un custom claim del usuario, con el level de usuario
-                    await AUTH.setCustomUserClaims(Decrypt(user.id), { level: user.level });
-
-                    // Se informa que todo ha ocurrido de forma satisfactoria
-                    return res.status(201).send({ code: "PROCESS_OK", message: "Operación realizada satisfactoriamente", type: "success" });
-                } 
-                catch (error) 
-                {
-                    return res.status(400).send({ code: "FIREBASE_ERROR", message: error.message, type: "error" });
-                }
-            }
-
-            return res.status(400).send({ code: "EMPTY_FIELDS", message: "Complete todos los campos", type: "error" });
-        })
-        .catch((error) => {
-            // En caso de caer aca, se informará al usuario con codigos, en el caso de que la token este revocada o invalida
-            if (error.code == 'auth/id-token-revoked') 
-            {
-                return res.status(401).send({ code: "TOKEN_REVOKED", message: "Re-autenticate o deslogueate de la aplicación para acceder nuevamente", type: "error" });
-            } 
-            else 
-            {
-                return res.status(401).send({ code: "TOKEN_INVALID", message: "El token provisto es invalido", type: "error" });
-            }
-        });
-    } 
-    catch (error) 
-    {
-        return res.status(401).send({ code: "UNAUTHORIZED_ACTION", message: "Acción no autorizada", type: "error" });
-    };
-};
 
 /**
  * Función para obtener los datos cruciales del usuario actual
+ * @param {import("express").Request} req objeto request
+ * @param {import("express").Response} res objeto reponse
+ * @returns mensaje informativo al usuario o el data del usuario
+ */
+controllers.whoami = async (req, res) => {
+    let { uid } = res.locals;
+
+    let auth = admin.auth();
+
+    let code = "";
+    let data = null;
+    let message = "";
+    let type = "";
+    let status = 0;
+
+    let object = {
+        email: "",
+        displayName: ""
+    };
+
+    await auth.getUser(uid)
+    .then(result => {
+        object.displayName = Encrypt(result.displayName);
+        object.email = Encrypt(result.email);
+
+        code = "PROCESS_OK";
+        data = Encrypt(object);
+        type = "success";
+        status = 200;
+    })
+    .catch(error => {
+        code = "FIREBASE_GET_USER_ERROR";
+        message = error.message;
+        type = "error";
+        status = 404;
+    })
+    .finally(() => {
+        res.status(status).send({ code: code, message: message, data: data, type: type });
+
+        uid = null;
+        code = null;
+        data = null;
+        message = null;
+        type = null;
+        auth = null;
+        status = null;
+
+        return;
+    });
+};
+
+
+/**
+ * Función para verificar que el run no este duplicado en la base de datos
+ * @param {string} run run del usuario
+ * @returns booleano de si existe o no el run en la base de datos
+ */
+const checkExistRun = async (run) => {
+    let db = admin.firestore();
+
+    let data = {
+        exist: false,
+        error: false,
+        message: "",
+        code: ""
+    };
+
+    await db.collection("users").get()
+    .then(result => {
+        let exist = result.docs.find(x => Decrypt(x.data().rut) === run).exists;
+
+        if (exist)
+        {
+            data.exist = true;
+            data.code = "RUN_ALREADY_EXIST";
+            data.message = "El run enviado ya está registrado";
+        }
+        else
+        {
+            data.code = "PROCESS_OK";
+        }
+    })
+    .catch(error => {
+        data.code = "FIREBASE_GET_USERS_ERROR";
+        data.error = true;
+        data.message = error.message;
+    })
+    .finally(() => {
+        return data;
+    });
+
+    return data;
+};
+
+
+/**
+ * Metodo que recibe un objeto user y creará un usuario en intranet
+ * @param {import("express").Request} req objeto request
+ * @param {import("express").Response} res objeto response
+ * @returns Mensaje informativo al usuario
+ */
+controllers.createAndRegisterUser = async (req, res) => {
+    let { uid } = res.locals;
+    let { user, courses, grades } = req.body;
+
+    let db = admin.firestore();
+    let auth = admin.auth();
+
+    let code = "";
+    let data = null;
+    let message = "";
+    let type = "";
+    let status = 0;
+
+    if (user !== null && courses !== null && grades !== null)
+    {
+        let run = Decrypt(user.rut);
+        let email = Decrypt(user.email);
+        let level = Decrypt(user.level);
+        let password = Decrypt(user.password);
+        let displayName = `${Decrypt(user.name)} ${Decrypt(user.surname)}`;
+                  
+        if (level === "teacher" || level === "student" || level === "proxie")
+        {
+            let checkRunExist = await checkExistRun(run);
+
+            if (checkRunExist.exist === true)
+            {
+                code = checkRunExist.code;
+                message = checkRunExist.message; 
+                type = "error";
+                status = 400;
+
+                res.status(400).send({ code: code, message: message, data: data, type: type });
+
+                uid = null;
+                user = null;
+                courses = null;
+                grades = null;
+                db = null;
+                auth = null;
+                status = null;
+
+                return;
+            }
+
+            if (level === "teacher")
+            {
+                let dataUserCourses = Decrypt(courses);
+
+                dataUserCourses.forEach(doc => {
+                    doc = doc.normalize('NFD').replace(/[\u0300-\u036f]/g, "");
+                });
+
+                user.courses = dataUserCourses;
+            }
+
+            if (level === "student")
+            {
+                let dataUserGrades = Decrypt(grades);        
+
+                let grade = dataUserGrades.grade.normalize('NFD').replace(/[\u0300-\u036f]/g, "");
+                let number = dataUserGrades.number;
+                let letter = dataUserGrades.letter.normalize('NFD').replace(/[\u0300-\u036f]/g, "");
+
+                user.grade = grade;
+                user.number = number;
+                user.letter = letter;
+            }
+
+            await auth.createUser({
+                displayName: displayName,
+                email: email,
+                password: password
+            })
+            .then(async result => {
+                await auth.setCustomUserClaims(result.uid, { level: user.level })
+                .catch(error => {
+                    code = "FIREBASE_SET_CLAIMS_ERROR";
+                    message = error.message;
+                    type = "error";
+        
+                    res.send({ code: code, message: message, data: data, type: type });
+        
+                    uid = null;
+                    user = null;
+                    courses = null;
+                    grades = null;
+                    db = null;
+                    auth = null;
+        
+                    return;
+                });
+            
+                delete user.password;
+                user.level = level;
+                user.created_at = admin.firestore.FieldValue.serverTimestamp();
+                user.created_by = uid;
+                user.deleted = false;
+
+                await db.collection("users").doc(result.uid).set(user)
+                .then(() => {
+                    code = "PROCESS_OK";
+                    message = "Usuario agregado existosamente";
+                    type = "success";
+                    status = 201;
+                })
+                .catch(error => {
+                    code = error.response.data.error.message;
+                    type = "error";
+                    status = 400;
+                })
+                .finally(() => {
+                    res.status(status).send({ code: code, message: message, data: data, type: type });
+
+                    uid = null;
+                    user = null;
+                    courses = null;
+                    grades = null;
+                    db = null;
+                    auth = null;
+                    status = null;
+
+                    return;
+                });
+            })
+            .catch(error => {
+                code = error.response.data.error.message;
+                type = "error";
+                status = 400;
+
+                res.status(status).send({ code: code, message: message, data: data, type: type });
+
+                uid = null;
+                user = null;
+                courses = null;
+                grades = null;
+                db = null;
+                auth = null;
+                status = null;
+
+                return;
+            });
+        }
+        else
+        {
+            code = "LEVEL_SENT_INVALID";
+            message = "El nivel enviado no es valido"; 
+            type = "error";
+            status = 400;
+            
+            res.status(status).send({ code: code, message: message, data: data, type: type });
+
+            uid = null;
+            user = null;
+            courses = null;
+            grades = null;
+            db = null;
+            auth = null;
+            status = null;
+
+            return;
+        }
+    }
+    else
+    {
+        code = "NO_DATA_SEND";
+        message = "Asegurate de que hayas completado los campos del formulario";
+        type = "info";
+        status = 400;
+
+        res.status(status).send({ code: code, message: message, data: data, type: type });
+
+        uid = null;
+        user = null;
+        courses = null;
+        grades = null;
+        db = null;
+        auth = null;
+        status = null;
+
+        return;
+    }
+};
+
+/**
+ * Función para crear y registrar un administrador
  * @param {Request} req objeto request
  * @param {Response} res objeto reponse
  * @returns mensaje informativo al usuario o el data del usuario
  */
-controllers.whoami = async (req, res) => {
-    // Se verifica si hay una token de autorización
-    if (!req.headers.authorization || !req.headers.authorization.startsWith('Bearer '))
-    {
-        return res.status(401).send({ code: "TOKEN_MISSING", message: "Esta acción necesita de un token de autenticación", type: "error" });
-    }
+controllers.createAndRegisterAdmin = async (req, res) => {
+    let { user, id } = req.body;
 
-    let idToken;
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) 
-    {
-        idToken = req.headers.authorization.split('Bearer ')[1];
-    }
+    let db = admin.firestore();
+    let auth = admin.auth();
 
-    try 
-    {
-        const payload = await AUTH.verifyIdToken(idToken, true);
-        const data = await DB.collection("users").doc(payload.uid).get();
-        
-        return res.send({
-            id: Encrypt(data.id),
-            data: Encrypt(data.data()),
+    let code = "";
+    let data = null;
+    let message = "";
+    let type = "";
+    let status = 0;
+
+    if (user !== null && id !== null)
+    {    
+        let uid = Decrypt(id);
+        let name = Decrypt(user.name);
+        let surname = Decrypt(user.surname);
+        let level = Decrypt(user.level);
+
+        delete user.password;
+        user.level = level;
+        user.created_at = admin.firestore.FieldValue.serverTimestamp();
+        user.created_by = uid;
+
+        await db.collection("users").doc(uid).set(user)
+        .then(async () => {
+            await auth.setCustomUserClaims(uid, { level: Encrypt(level) });
+            await auth.updateUser(uid, {
+                displayName: `${name} ${surname}`
+            });
+
+            code = "PROCESS_OK";
+            message = "Usuario agregado existosamente";
+            type = "success";
+            status = 201;
         })
-        /* await AUTH.verifyIdToken(idToken, true)
-        .then(async(payload) => {
-            let data = await DB.collection("users").doc(payload.uid).get();
-            return res.send({
-                id:Encrypt(data.id),
-                data:Encrypt(data.data()),
-            })
-            
+        .catch(async (error) => {
+            code = error.response.data.error.message;
+            type = "error";
+            status = 400;
         })
-        .catch((error) => {
-            // En caso de caer aca, se informará al usuario con codigos, en el caso de que la token este revocada o invalida
-            if (error.code == 'auth/id-token-revoked') 
-            {
-                return res.status(401).send({ code: "TOKEN_REVOKED", message: "Re-autenticate o deslogueate de la aplicación para acceder nuevamente", type: "error" });
-            } 
-            else 
-            {
-                return res.status(401).send({ code: "TOKEN_INVALID", message: "El token provisto es invalido", type: "error" });
-            }
-        }); */
-    } 
-    catch (error) 
+        .finally(() => {
+            res.status(status).send({ code: code, message: message, data: data, type: type });
+
+            user = null;
+            courses = null;
+            grades = null;
+            db = null;
+            auth = null;
+            status = null;
+
+            return;
+        });
+    }
+    else
     {
-        // En caso de caer aca, se informará al usuario con codigos, en el caso de que la token este revocada o invalida
-        if (error.code == 'auth/id-token-revoked') 
-        {
-            return res.status(401).send({ code: "TOKEN_REVOKED", message: "Re-autenticate o deslogueate de la aplicación para acceder nuevamente", type: "error" });
-        } 
-        else 
-        {
-            return res.status(401).send({ code: "TOKEN_INVALID", message: "El token provisto es invalido", type: "error" });
-        }
-        //return res.status(401).send({ code: "UNAUTHORIZED_ACTION", message: "Acción no autorizada", type: "error" });
+        code = "NO_DATA_SEND";
+        message = "Asegurate de que hayas completado los campos del formulario";
+        type = "info";
+        status = 400;
+
+        res.status(status).send({ code: code, message: message, data: data, type: type });
+
+        user = null;
+        courses = null;
+        grades = null;
+        db = null;
+        auth = null;
+        status = null;
+
+        return;
     }
 };
+
 
 module.exports = controllers;
